@@ -45,22 +45,30 @@ calculateVariance = function(data,
                              estimationMethod,
                              estimand = "difference",
                              bootstraps = 2500,
+                             rngSeed = NULL,
+                             mcCores = 1,
                              ...){
 
   ellipsis_args = as.list(substitute(list(...)))[-1L]
 
   # Use bootstrap to estimate variance
-  set.seed(123, "L'Ecuyer")
-  med.boot = mclapply(1:bootstraps, function(i) {
-    dataNew = data[sample(nrow(data), nrow(data), replace = TRUE), ]
+  set.seed(seed = rngSeed, kind = "L'Ecuyer")
+  med.boot =
+    parallel::mclapply(
+      X = 1:bootstraps,
+      FUN =
+        function(i) {
+          dataNew = data[sample(nrow(data), nrow(data), replace = TRUE), ]
 
-    all_args = c(list(data=dataNew, estimationMethod=estimationMethod, estimand=estimand), ellipsis_args)
-    estimate = do.call(what = calculateEstimate,
-                       args = all_args)
+          all_args = c(list(data=dataNew, estimationMethod=estimationMethod, estimand=estimand), ellipsis_args)
+          estimate = do.call(what = calculateEstimate,
+                             args = all_args)
 
-    estimate
+          estimate
 
-  }, mc.cores = 16)
+        },
+      mc.cores = mcCores
+    )
 
 
   # Calculate variance based on the different bootstrap estimates
@@ -91,6 +99,8 @@ calculateCovariance = function(data,
                                bootstraps = 2500,
                                previousDatasets=list(),
                                parametersPreviousEstimators = NULL,
+                               rngSeed = NULL,
+                               mcCores = 1,
                                ...
 ){
 
@@ -99,67 +109,72 @@ calculateCovariance = function(data,
   analysisNumber = length(previousDatasets)+1
 
   # Use bootstrap to estimate variance and covariances
-  set.seed(123, "L'Ecuyer")
-  med.boot = mclapply(1:bootstraps, function(i) {
-    #dataNew = data[sample(nrow(data), nrow(data), replace = TRUE), ]
-    selection = sample(data$id, nrow(data), replace = TRUE)
-    selectionFreq = as.data.frame(table(selection))
+  set.seed(seed = rngSeed, kind = "L'Ecuyer")
+  med.boot <-
+    parallel::mclapply(
+      X = 1:bootstraps,
+      FUN = function(i) {
+        #dataNew = data[sample(nrow(data), nrow(data), replace = TRUE), ]
+        selection = sample(data$id, nrow(data), replace = TRUE)
+        selectionFreq = as.data.frame(table(selection))
 
-    sub_sample_df = data[data$id%in%selection,]
-    match_freq = selectionFreq[match(sub_sample_df$id, selectionFreq$selection),]
+        sub_sample_df = data[data$id%in%selection,]
+        match_freq = selectionFreq[match(sub_sample_df$id, selectionFreq$selection),]
 
-    sub_sample_df$Freq = match_freq$Freq
-    selected_rows = rep(1:nrow(sub_sample_df), sub_sample_df$Freq)
-    dataNew = sub_sample_df[selected_rows,]
+        sub_sample_df$Freq = match_freq$Freq
+        selected_rows = rep(1:nrow(sub_sample_df), sub_sample_df$Freq)
+        dataNew = sub_sample_df[selected_rows,]
 
-    estimate=c()
+        estimate=c()
 
-    all_args = c(list(data = dataNew, estimationMethod = estimationMethod, estimand = estimand), ellipsis_args)
-    estimate[analysisNumber]  = do.call(what = calculateEstimate,
-                                        args = all_args)[[1]]
+        all_args = c(list(data = dataNew, estimationMethod = estimationMethod, estimand = estimand), ellipsis_args)
+        estimate[analysisNumber]  = do.call(what = calculateEstimate,
+                                            args = all_args)[[1]]
 
-    for(j in 1:(analysisNumber-1)){
+        for(j in 1:(analysisNumber-1)){
 
-      dataNew1 = previousDatasets[[j]]
+          dataNew1 = previousDatasets[[j]]
 
-      sub_sample_df = dataNew1[dataNew1$id%in%selection,]
-      match_freq = selectionFreq[match(sub_sample_df$id, selectionFreq$selection),]
+          sub_sample_df = dataNew1[dataNew1$id%in%selection,]
+          match_freq = selectionFreq[match(sub_sample_df$id, selectionFreq$selection),]
 
-      sub_sample_df$Freq = match_freq$Freq
-      selected_rows = rep(1:nrow(sub_sample_df), sub_sample_df$Freq)
-      dataNew1 = sub_sample_df[selected_rows,]
+          sub_sample_df$Freq = match_freq$Freq
+          selected_rows = rep(1:nrow(sub_sample_df), sub_sample_df$Freq)
+          dataNew1 = sub_sample_df[selected_rows,]
 
 
-      if(is.list(parametersPreviousEstimators)==TRUE){
+          if(is.list(parametersPreviousEstimators)==TRUE){
 
-        ellipsis_args_previous = ellipsis_args
-        ellipsis_args_previous[names(parametersPreviousEstimators[[j]])]=parametersPreviousEstimators[[j]]
+            ellipsis_args_previous = ellipsis_args
+            ellipsis_args_previous[names(parametersPreviousEstimators[[j]])]=parametersPreviousEstimators[[j]]
 
-        if("estimationMethod" %in% names(parametersPreviousEstimators[[j]])){
+            if("estimationMethod" %in% names(parametersPreviousEstimators[[j]])){
 
-          all_args = c(list(data = dataNew1, estimand = estimand), ellipsis_args_previous)
-          estimate[j]  = do.call(what = calculateEstimate,
-                                 args = all_args)[[1]]
+              all_args = c(list(data = dataNew1, estimand = estimand), ellipsis_args_previous)
+              estimate[j]  = do.call(what = calculateEstimate,
+                                     args = all_args)[[1]]
 
-        }else{
+            }else{
 
-          all_args = c(list(data = dataNew1, estimationMethod = estimationMethod, estimand = estimand), ellipsis_args_previous)
-          estimate[j]  = do.call(what = calculateEstimate,
-                                 args = all_args)[[1]]
+              all_args = c(list(data = dataNew1, estimationMethod = estimationMethod, estimand = estimand), ellipsis_args_previous)
+              estimate[j]  = do.call(what = calculateEstimate,
+                                     args = all_args)[[1]]
+
+            }
+
+          }else{
+            all_args = c(list(data = dataNew1, estimationMethod = estimationMethod, estimand = estimand), ellipsis_args)
+            estimate[j]  = do.call(what = calculateEstimate,
+                                   args = all_args)[[1]]
+          }
 
         }
 
-      }else{
-        all_args = c(list(data = dataNew1, estimationMethod = estimationMethod, estimand = estimand), ellipsis_args)
-        estimate[j]  = do.call(what = calculateEstimate,
-                               args = all_args)[[1]]
-      }
+        estimate
 
-    }
-
-    estimate
-
-  }, mc.cores = 16)
+      },
+      mc.cores = mcCores
+    )
 
   # Calculate covariances and variance based on the different bootstrap estimates
   dataCov = data.frame(matrix(unlist(med.boot), nrow=length(med.boot), byrow=TRUE))
@@ -315,9 +330,12 @@ interimDecision = function(testStatistic,
       all_args2_final = c(list(sided = 2, alpha = alpha, beta = beta,
                                typeOfDesign = typeOfDesign,
                                typeBetaSpending = typeBetaSpending,
-                               informationRates = c(previousInformationTimes, 1)),
+                               informationRates = c(previousInformationTimes, 1),
+                               ## HERE ##
+                               test12345 = 12345
+                               ),
                           ellipsis_args)
-      bound = do.call(what = getDesignGroupSequential,
+      bound = do.call.matched(what = getDesignGroupSequential,
                       args = all_args2_final)
 
 
@@ -330,8 +348,8 @@ interimDecision = function(testStatistic,
                                                       currentInformationTime,
                                                       plannedInformationTimes[-c(1:analysisNumber)])),
                             ellipsis_args)
-      bound = do.call(what = getDesignGroupSequential,
-                      args = all_args2_interim)
+      bound = do.call.matched(what = getDesignGroupSequential,
+                              args = all_args2_interim)
 
     }
 
@@ -346,9 +364,9 @@ interimDecision = function(testStatistic,
                                typeOfDesign=typeOfDesign,
                                typeBetaSpending = typeBetaSpending,
                                informationRates = c(previousInformationTimes, 1)),
-                          ellipsis_args)
-      bound = do.call(what = getDesignGroupSequential,
-                      args = all_args1_final)
+      ellipsis_args)
+      bound = do.call.matched(what = getDesignGroupSequential,
+                              args = all_args1_final)
 
       if(alternative=="less"){
 
@@ -369,10 +387,13 @@ interimDecision = function(testStatistic,
                                  typeBetaSpending = typeBetaSpending,
                                  informationRates = c(previousInformationTimes,
                                                       currentInformationTime,
-                                                      plannedInformationTimes[-c(1:analysisNumber)])),
+                                                      plannedInformationTimes[-c(1:analysisNumber)]),
+                                 ## HERE ##
+                                 test101010 = 101010
+                                 ),
                             ellipsis_args)
-      bound = do.call(what = getDesignGroupSequential,
-                      args = all_args1_interim)
+      bound = do.call.matched(what = getDesignGroupSequential,
+                              args = all_args1_interim)
 
       if(futilityStopping == FALSE){
 

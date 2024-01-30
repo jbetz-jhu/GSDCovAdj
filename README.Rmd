@@ -51,7 +51,16 @@ We first install the required packages
 required_packages <-
   c("tidyr", "dplyr", "parallel", "ldbounds")
 
-install.packages(required_packages)
+installed_packages <-
+  as.data.frame(installed.packages()[,c(1,3:4)])
+
+packages_to_install <-
+  setdiff(
+    x = required_packages,
+    y = installed_packages$Package
+  )
+
+utils::install.packages(packages_to_install)
 ```
 
 Once the required packages are installed, they can be loaded using `library()`
@@ -64,7 +73,14 @@ library(parallel)
 library(ldbounds)
 
 library(simul)
-library(GSDCovAdj)
+# library(GSDCovAdj)
+
+source(file.path("R", "supplementary.R"))
+source(file.path("R", "interimAnalysis.R"))
+source(file.path("R", "interimInformation.R"))
+source(file.path("R",  "Functions.R"))
+source(file.path("R",  "data_at_time_t.R"))
+source(file.path("R",  "standardization.R"))
 ```
 
 
@@ -250,30 +266,35 @@ data_ia = data_at_time_t(
   outcome_columns = c("y_1"),
   outcome_times = c("outcome_times"),
   analysis_time = time_ia
-      ) 
-    
+) 
+
 ```
 
 We can then call the function `interimAnalysis()` to conduct the interim analysis. This gives us a decision based on the original estimator and updated estimator (which is the same as the original one at the first analysis). In addition, we get the estimates(both the original and updated estimate), the corresponding standard errors, test statistics, and information fractions. Finally, we also get the current covariance matrix based on the original estimates, which we will need at the final analysis to do the orthogonalization (in order to obtain the updated estimate).
 
 ```{r interim-analysis, warning=FALSE}
-results_ia = interimAnalysis(data = data_ia,
-                             totalInformation = inf_total, 
-                             estimationMethod= standardization,
-                             estimand = "difference",
-                             null.value = 0,
-                             alpha = 0.05,
-                             beta = 0.2,
-                             alternative = "two.sided", 
-                             typeOfDesign = "asP",
-                             typeBetaSpending = "none",
-                             futilityStopping = FALSE,
-                             plannedAnalyses=2,
-                             y0_formula=y_1 ~ x_1, 
-                             y1_formula=y_1 ~ x_1,
-                             family="binomial",
-                             treatment_column = "treatment"
-                             )
+results_ia <-
+  interimAnalysis(
+    data = data_ia,
+    totalInformation = inf_total, 
+    estimationMethod= standardization,
+    estimand = "difference",
+    null.value = 0,
+    alpha = 0.05,
+    beta = 0.2,
+    alternative = "two.sided", 
+    typeOfDesign = "asP",
+    typeBetaSpending = "none",
+    futilityStopping = FALSE,
+    plannedAnalyses=2,
+    plannedInformationTimes = c(0.5, 1),
+    y0_formula=y_1 ~ x_1, 
+    y1_formula=y_1 ~ x_1,
+    family="binomial",
+    treatment_column = "treatment",
+    rngSeed = 12345,
+    mcCores = 1
+  )
 
 ```
 
@@ -326,50 +347,58 @@ Via the function `data_at_time_t()` we construct a dataframe of the data availab
 time_fin = sort(study.data$outcome_times)[n_total]
 n_recr_fin = length(which(study.data$enrollment_times<=time_fin))
 
-data_fin = data_at_time_t(
-  data = study.data,
-  id_column = "id",
-  enrollment_time = "enrollment_times",
-  treatment_column = "treatment",
-  covariate_columns = c("x_1", "x_2", "x_3", "x_4"),
-  outcome_columns = c("y_1"),
-  outcome_times = c("outcome_times"),
-  analysis_time = time_fin
-      ) 
+data_fin = 
+  data_at_time_t(
+    data = study.data,
+    id_column = "id",
+    enrollment_time = "enrollment_times",
+    treatment_column = "treatment",
+    covariate_columns = c("x_1", "x_2", "x_3", "x_4"),
+    outcome_columns = c("y_1"),
+    outcome_times = c("outcome_times"),
+    analysis_time = time_fin
+  ) 
     
 ```
 
 We can then call the function `interimAnalysis()` to conduct the final analysis. This gives us a decision based on the original estimator and updated estimator (which is the same as the original one at the first analysis). In addition, we get the estimates(both the original and updated estimate), the corresponding standard errors, test statistics, and information fractions. Finally, we also get the current covariance matrix based on the original estimates, which we will need at the final analysis to do the orthogonalization (in order to obtain the updated estimate).
 
 ```{r final-analysis}
-results_fin = interimAnalysis(data = data_fin, 
-                            totalInformation = inf_total, 
-                            estimationMethod= standardization,
-                            estimand = "difference",
-                            previousEstimatesOriginal=previousEstimates,
-                            previousCovMatrixOriginal=covMatrix,
-                            previousInformationTimesOriginal=previousTimes,
-                            previousInformationTimesUpdated=previousTimesUpd,
-                            previousDatasets = list(data_ia),
-                            null.value = 0,
-                            alpha = 0.05, 
-                            beta = 0.2,
-                            alternative = "two.sided", 
-                            typeOfDesign = "asP",
-                            typeBetaSpending = "none",
-                            futilityStopping = FALSE,
-                            plannedAnalyses=2,
-                            y0_formula=y_1 ~ x_2, 
-                            y1_formula=y_1 ~ x_2,
-                            family="binomial",
-                            parametersPreviousEstimators = list(list(
-                              y0_formula=y_1 ~ x_1,
-                              y1_formula=y_1 ~ x_1,
-                              family="binomial"
-                              )),
-                            treatment_column = "treatment"
-)
-
+results_fin = 
+  interimAnalysis(
+    data = data_fin, 
+    totalInformation = inf_total, 
+    estimationMethod= standardization,
+    estimand = "difference",
+    previousEstimatesOriginal=previousEstimates,
+    previousCovMatrixOriginal=covMatrix,
+    previousInformationTimesOriginal=previousTimes,
+    previousInformationTimesUpdated=previousTimesUpd,
+    previousDatasets = list(data_ia),
+    null.value = 0,
+    alpha = 0.05, 
+    beta = 0.2,
+    alternative = "two.sided", 
+    typeOfDesign = "asP",
+    typeBetaSpending = "none",
+    futilityStopping = FALSE,
+    plannedAnalyses=2,
+    plannedInformationTimes = c(0.5, 1),
+    y0_formula=y_1 ~ x_2, 
+    y1_formula=y_1 ~ x_2,
+    family="binomial",
+    parametersPreviousEstimators = 
+      list(
+        list(
+          y0_formula=y_1 ~ x_1,
+          y1_formula=y_1 ~ x_1,
+          family="binomial"
+        )
+      ),
+    treatment_column = "treatment",
+    rngSeed = 12345,
+    mcCores = 1
+  )
 ```
 
 ##### Results

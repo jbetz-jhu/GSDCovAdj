@@ -48,7 +48,16 @@ We first install the required packages
 required_packages <-
   c("tidyr", "dplyr", "parallel", "ldbounds")
 
-install.packages(required_packages)
+installed_packages <-
+  as.data.frame(installed.packages()[,c(1,3:4)])
+
+packages_to_install <-
+  setdiff(
+    x = required_packages,
+    y = installed_packages$Package
+  )
+
+utils::install.packages(packages_to_install)
 ```
 
 Once the required packages are installed, they can be loaded using
@@ -56,11 +65,11 @@ Once the required packages are installed, they can be loaded using
 
 ``` r
 library(rpact)
-#> Warning: package 'rpact' was built under R version 4.1.2
+#> Warning: package 'rpact' was built under R version 4.3.2
 library(tidyr)
-#> Warning: package 'tidyr' was built under R version 4.1.2
+#> Warning: package 'tidyr' was built under R version 4.3.2
 library(dplyr)
-#> Warning: package 'dplyr' was built under R version 4.1.2
+#> Warning: package 'dplyr' was built under R version 4.3.2
 #> 
 #> Attaching package: 'dplyr'
 #> The following objects are masked from 'package:stats':
@@ -71,12 +80,17 @@ library(dplyr)
 #>     intersect, setdiff, setequal, union
 library(parallel)
 library(ldbounds)
-#> Warning: package 'ldbounds' was built under R version 4.1.2
+#> Warning: package 'ldbounds' was built under R version 4.3.2
 
 library(simul)
-library(GSDCovAdj)
-#> Warning: replacing previous import 'betareg::predict' by 'stats::predict' when
-#> loading 'GSDCovAdj'
+# library(GSDCovAdj)
+
+source(file.path("R", "supplementary.R"))
+source(file.path("R", "interimAnalysis.R"))
+source(file.path("R", "interimInformation.R"))
+source(file.path("R",  "Functions.R"))
+source(file.path("R",  "data_at_time_t.R"))
+source(file.path("R",  "standardization.R"))
 ```
 
 ### Design Parameters
@@ -108,6 +122,7 @@ n_total = round(1.1110*(power.prop.test(power=0.90,p1=0.55,p2=0.5,
 We load the code to calculate expit.
 
 ``` r
+
 expit = function(x){
   exp(x)/(1+exp(x))
 }
@@ -243,16 +258,16 @@ load(file = url(data_url_gsd_data))
 The complete simulated trial data without any missing values are in a
 `data.frame` named `study.data`.
 
--   Randomization Information
-    -   `treatment`: Treatment Arm
--   Baseline Information
-    -   `x_1`, `x_2`, `x_3` and `x_4`: 4 continuous baseline covariates
-    -   `id`: patient identifier
-    -   `enrollment_times`: time of enrollment
--   Outcome information:
-    -   `y_1`: Binary outcome (1: success; 0: otherwise)
-    -   `outcome_times`: time someone’s outcome is measured (365 days
-        after enrollment)
+- Randomization Information
+  - `treatment`: Treatment Arm
+- Baseline Information
+  - `x_1`, `x_2`, `x_3` and `x_4`: 4 continuous baseline covariates
+  - `id`: patient identifier
+  - `enrollment_times`: time of enrollment
+- Outcome information:
+  - `y_1`: Binary outcome (1: success; 0: otherwise)
+  - `outcome_times`: time someone’s outcome is measured (365 days after
+    enrollment)
 
 ### Combining Group Sequential Designs and Covariate Adjustment
 
@@ -276,8 +291,7 @@ data_ia = data_at_time_t(
   outcome_columns = c("y_1"),
   outcome_times = c("outcome_times"),
   analysis_time = time_ia
-      ) 
-    
+) 
 ```
 
 We can then call the function `interimAnalysis()` to conduct the interim
@@ -291,23 +305,28 @@ analysis to do the orthogonalization (in order to obtain the updated
 estimate).
 
 ``` r
-results_ia = interimAnalysis(data = data_ia,
-                             totalInformation = inf_total, 
-                             estimationMethod= standardization,
-                             estimand = "difference",
-                             null.value = 0,
-                             alpha = 0.05,
-                             beta = 0.2,
-                             alternative = "two.sided", 
-                             typeOfDesign = "asP",
-                             typeBetaSpending = "none",
-                             futilityStopping = FALSE,
-                             plannedAnalyses=2,
-                             y0_formula=y_1 ~ x_1, 
-                             y1_formula=y_1 ~ x_1,
-                             family="binomial",
-                             treatment_column = "treatment"
-                             )
+results_ia <-
+  interimAnalysis(
+    data = data_ia,
+    totalInformation = inf_total, 
+    estimationMethod= standardization,
+    estimand = "difference",
+    null.value = 0,
+    alpha = 0.05,
+    beta = 0.2,
+    alternative = "two.sided", 
+    typeOfDesign = "asP",
+    typeBetaSpending = "none",
+    futilityStopping = FALSE,
+    plannedAnalyses=2,
+    plannedInformationTimes = c(0.5, 1),
+    y0_formula=y_1 ~ x_1, 
+    y1_formula=y_1 ~ x_1,
+    family="binomial",
+    treatment_column = "treatment",
+    rngSeed = 12345,
+    mcCores = 1
+  )
 ```
 
 ##### Results
@@ -351,7 +370,7 @@ Covariance matrix (i.e., variance) of the original interim estimate
 
 ``` r
 results_ia$covMatrixOriginal
-#> [1] 0.0003517528
+#> [1] 0.0003562698
 covMatrix = results_ia$covMatrixOriginal
 ```
 
@@ -360,7 +379,7 @@ end of trial) corresonding with original interim estimate
 
 ``` r
 results_ia$informationTimeOriginal
-#> [1] 0.6088245
+#> [1] 0.6011055
 previousTimes = results_ia$informationTimeOriginal
 ```
 
@@ -369,7 +388,7 @@ end of trial) corresonding with updated interim estimate
 
 ``` r
 results_ia$informationTimeUpdated
-#> [1] 0.6088245
+#> [1] 0.6011055
 previousTimesUpd = results_ia$informationTimeUpdated
 ```
 
@@ -382,16 +401,17 @@ available at the final analysis (which equals the full dataset!).
 time_fin = sort(study.data$outcome_times)[n_total]
 n_recr_fin = length(which(study.data$enrollment_times<=time_fin))
 
-data_fin = data_at_time_t(
-  data = study.data,
-  id_column = "id",
-  enrollment_time = "enrollment_times",
-  treatment_column = "treatment",
-  covariate_columns = c("x_1", "x_2", "x_3", "x_4"),
-  outcome_columns = c("y_1"),
-  outcome_times = c("outcome_times"),
-  analysis_time = time_fin
-      ) 
+data_fin = 
+  data_at_time_t(
+    data = study.data,
+    id_column = "id",
+    enrollment_time = "enrollment_times",
+    treatment_column = "treatment",
+    covariate_columns = c("x_1", "x_2", "x_3", "x_4"),
+    outcome_columns = c("y_1"),
+    outcome_times = c("outcome_times"),
+    analysis_time = time_fin
+  ) 
     
 ```
 
@@ -406,49 +426,41 @@ analysis to do the orthogonalization (in order to obtain the updated
 estimate).
 
 ``` r
-results_fin = interimAnalysis(data = data_fin, 
-                            totalInformation = inf_total, 
-                            estimationMethod= standardization,
-                            estimand = "difference",
-                            previousEstimatesOriginal=previousEstimates,
-                            previousCovMatrixOriginal=covMatrix,
-                            previousInformationTimesOriginal=previousTimes,
-                            previousInformationTimesUpdated=previousTimesUpd,
-                            previousDatasets = list(data_ia),
-                            null.value = 0,
-                            alpha = 0.05, 
-                            beta = 0.2,
-                            alternative = "two.sided", 
-                            typeOfDesign = "asP",
-                            typeBetaSpending = "none",
-                            futilityStopping = FALSE,
-                            plannedAnalyses=2,
-                            y0_formula=y_1 ~ x_2, 
-                            y1_formula=y_1 ~ x_2,
-                            family="binomial",
-                            parametersPreviousEstimators = list(list(
-                              y0_formula=y_1 ~ x_1,
-                              y1_formula=y_1 ~ x_1,
-                              family="binomial"
-                              )),
-                            treatment_column = "treatment"
-)
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'y0_formula' =
-#> formula will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'y1_formula' =
-#> formula will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'family' =
-#> 'binomial' will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'treatment_column' =
-#> 'treatment' will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'y0_formula' =
-#> formula will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'y1_formula' =
-#> formula will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'family' =
-#> 'binomial' will be ignored
-#> Warning: Argument unknown in getDesignGroupSequential(...): 'treatment_column' =
-#> 'treatment' will be ignored
+results_fin = 
+  interimAnalysis(
+    data = data_fin, 
+    totalInformation = inf_total, 
+    estimationMethod= standardization,
+    estimand = "difference",
+    previousEstimatesOriginal=previousEstimates,
+    previousCovMatrixOriginal=covMatrix,
+    previousInformationTimesOriginal=previousTimes,
+    previousInformationTimesUpdated=previousTimesUpd,
+    previousDatasets = list(data_ia),
+    null.value = 0,
+    alpha = 0.05, 
+    beta = 0.2,
+    alternative = "two.sided", 
+    typeOfDesign = "asP",
+    typeBetaSpending = "none",
+    futilityStopping = FALSE,
+    plannedAnalyses=2,
+    plannedInformationTimes = c(0.5, 1),
+    y0_formula=y_1 ~ x_2, 
+    y1_formula=y_1 ~ x_2,
+    family="binomial",
+    parametersPreviousEstimators = 
+      list(
+        list(
+          y0_formula=y_1 ~ x_1,
+          y1_formula=y_1 ~ x_1,
+          family="binomial"
+        )
+      ),
+    treatment_column = "treatment",
+    rngSeed = 12345,
+    mcCores = 1
+  )
 ```
 
 ##### Results
@@ -486,6 +498,6 @@ Updated final estimate
 
 ``` r
 results_fin$estimateUpdated
-#>           [,1]
-#> [1,] 0.0152497
+#>            [,1]
+#> [1,] 0.01527825
 ```
