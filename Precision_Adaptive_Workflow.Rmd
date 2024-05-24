@@ -1,0 +1,949 @@
+---
+title: "Precision Adaptive Study Workflow"
+author: "Josh Betz (jbetz@jhu.edu)"
+date: "2024-04-12"
+output: html_document
+---
+
+```{r}
+rm(list = ls())
+
+fig_h <- fig_w <- 8
+fig_2h <- 2*fig_h
+fig_2w <- 2*fig_w
+```
+
+```{r Source-R-Files, echo = FALSE}
+source(file.path("precision_adaptive_planning.R"))
+source(file.path("interim_analysis.R"))
+source(file.path("standardization.R"))
+```
+
+
+
+
+# Planning The Study
+
+Planning information-monitored study is similar in many respects to planning a fixed-sample size study. Investigators decide on an effect size that is meaningful in magnitude, and decide on the appropriate Type I Error Rate, statistical power, and direction of alternatives of interest:
+
+```{r Universal-Study-Design-Parameters}
+# Universal Study Design Parameters
+minimum_difference <- 5 # Effect Size: Difference in Means of 5 or greater
+alpha <- 0.05 # Type I Error Rate
+power <- 0.9 # Statistical Power
+test_sides <- 2 # Direction of Alternatives
+```
+
+The amount of data that must be collected depends on the amount of the information in the accruing data, with the information depending on the patterns of associations among variables, variability in the outcomes of interest, and degree of missingness. Such information is not always available when studies are being planned in practice.
+
+Fixed sample size designs require investigators make assumptions about the factors affecting precision: when such assumptions are incorrect, studies can be over- or under-powered. Rather than planning data collection until a pre-specified sample size is reached, an information-monitored study continues data collection until the data collected provide enough precision to identify a meaningful difference with appropriate power and control of Type I Error.
+
+
+
+
+## Determining the Target Information Level
+
+The information or precision required to achieve power $(1 - \beta)$ to identify a treatment effect $\delta$ with an $s$-sided test with type I error rate $\alpha$ at the final analysis is given by:
+
+$$\mathcal{I}_{F} = \left(\frac{Z_{\alpha/s} + Z_{\beta}}{\delta}\right)^2 \approx \frac{1}{\left(SE(\hat{\delta})\right)^2} = \frac{1}{Var(\hat{\delta})}$$
+
+```{r Information-Monitored-Design-Parameters}
+# Determine information required to achieve desired power at fixed error rate
+information_fixed <-
+  required_information_uninflated(
+    delta = minimum_difference,
+    alpha = alpha,
+    power = power
+  )
+
+information_fixed
+```
+
+For example, detecting a difference in means of `r minimum_difference` with `r 100*power`% power and a Type I Error rate of `r alpha` using a `r test_sides`-sided test requires an information level of `r information_fixed`. Investigators can collect data until the precision (the reciprocal of the square of the standard error) reaches this level, and their analysis will have the appropriate power and Type I error control.
+
+
+
+
+## Translating Information into Sample Size
+
+Translating information levels to a sample size requires making some assumption about nuisance parameters, such as the variability of the outcomes in each treatment arm. The `information_to_n_continuous_1_to_1` function takes an information level and values of the nuisance parameters, and gives an approximate sample size. Note that this calculation only takes into account the information contained in the observed outcomes: if some outcomes are missing, or if the analysis makes use of information in baseline covariates and intermediate outcomes, this can change the sample size at which the target information level is reached.
+
+```{r Translate-Information-to-N}
+# Assume Equal Variances: 7.5
+approximate_n_sd_7.5 <-
+  information_to_n_continuous_1_to_1(
+    information = information_fixed,
+    sigma_0 = 7.5,
+    sigma_1 = 7.5,
+    round_up = TRUE
+  )
+
+approximate_n_sd_7.5
+
+# Compute Power: Fixed Sample Size
+pwr::pwr.t.test(
+  d = minimum_difference/7.5,
+  sig.level = alpha,
+  power = power
+)
+
+
+# Equal Variances: 10
+approximate_n_sd_10 <-
+  information_to_n_continuous_1_to_1(
+    information = information_fixed,
+    sigma_0 = 10,
+    sigma_1 = 10,
+    round_up = TRUE
+  )
+
+approximate_n_sd_10
+
+# Compute Power: Fixed Sample Size
+pwr::pwr.t.test(
+  d = minimum_difference/10,
+  sig.level = alpha,
+  power = power
+)
+```
+
+Note that under specific assumptions about the standard deviations in the populations are met, the sample size requirements determined using a fixed sample size design (`pwr::pwr.t.test`) or an information-monitored design (`information_to_n_continuous_1_to_1`) are the same. The advantage of an information-adaptive design is the sample size adapts to the information in the accruing data: rather than making assumptions about the standard deviations in each population, which could result in an over- or under-powered trial, data collection proceeds until the target information level is met, which ensures adequate power and Type I Error control.
+
+
+
+
+## Sequential Analyses in Studies
+
+If the true effect of interest is greater than the minimum meaningful effect $\delta$, the study may still be overpowered. Conversely, if the true effect is very small, or indicates that the benefits of participating in the study are not commensurate with risks, it may be futile to continue data collection. In such cases, interim analyses of the data can be used to guide more ethical, cost-effective data collection.
+
+Group-Sequential Designs allow investigators to control Type I Error rates when performing pre-specified interim assessments of the differences between groups. Studies can also be stopped early for futility if accruing data suggest that a treatment is ineffective or harmful. The number and timing of analyses must be pre-specified, as well as the rules for stopping for efficacy and futility. The stopping rules are specified using 'spending functions:' alpha spending functions define efficacy stopping rules, and beta spending functions define futility stopping rules. For more information on group sequential designs, see [the documentation for the `RPACT` package](https://www.rpact.org). This example will utilize the O'Brien-Fleming stopping rules for efficacy and futility.
+
+In contrast to a group sequential design, which performs analyses at pre-specified fractions of the final sample size, an information-monitored study performs analyses when the data collected provide enough precision to identify a treatment effect with the appropriate power and Type I Error. Analyses are conducted when the precision reaches pre-specified fractions of this level of precision.
+
+```{r Group-Sequential-Design-Parameters}
+# Group Sequential Design Parameters
+information_rates <-
+  c(0.50, 0.75, 1.00) # Analyses at 50%, 75%, and 100% of the Total Information
+type_of_design <- "asOF" # O'Brien-Fleming Alpha Spending
+type_beta_spending <- "bsOF" # O'Brien-Fleming Beta Spending
+```
+
+The `getDesignGroupSequential` function in the `rpact` library can be used to specify the appropriate study design:
+
+```{r Specify-Sequential-Design-Procedure}
+# Set up group sequential testing procedure
+trial_design <-
+  rpact::getDesignGroupSequential(
+    alpha = alpha,
+    beta = 1 - power,
+    sided = 2,
+    informationRates = information_rates,
+    typeOfDesign = type_of_design,
+    typeBetaSpending = type_beta_spending,
+    bindingFutility = FALSE
+  )
+```
+
+
+
+
+## Adjusting Information for Multiple Analyses
+
+When doing sequential analyses in an information-monitored design, the target level of information must be adjusted:
+
+```{r Adjust-Information-Target-Using-GSD}
+# Inflate information to account for multiple testing
+information_adaptive <-
+  required_information_inflated(
+    information_fixed = information_fixed,
+    gsd_design_specification = trial_design
+  )
+
+information_adaptive
+```
+
+The information required under the specified design is `r information_adaptive`, which is scaled up by the inflation factor mentioned in the summary of the design (`r rpact::getDesignCharacteristics(trial_design)$inflationFactor`). This can be retrieved using `rpact::getDesignCharacteristics(trial_design)`.
+
+
+
+
+## Including Covariate Information
+
+Appropriately including information from covariates has the potential to increase the precision of analyses, meaning that target information levels can be reached at lower sample sizes, resulting in studies with shorter duration.
+
+```{r Unadjusted-vs-Adjusted-Analysis}
+# Information Only From Final Outcomes
+information_to_n_continuous_1_to_1(
+    information = information_rates*information_adaptive,
+    sigma_0 = 10,
+    sigma_1 = 10,
+    round_up = FALSE
+  )
+
+
+
+
+# 10% Relative Efficiency Increase from Covariates
+relative_efficiency <- 1.1
+
+# Information From Final Outcomes + Covariates
+information_to_n_continuous_1_to_1(
+  information = information_rates*information_adaptive/relative_efficiency,
+  sigma_0 = 10,
+  sigma_1 = 10,
+  round_up = TRUE
+)
+
+
+
+
+# 20% Relative Efficiency Increase from Covariates
+relative_efficiency <- 1.2
+
+# Information From Final Outcomes + Covariates
+information_to_n_continuous_1_to_1(
+  information = information_rates*information_adaptive/relative_efficiency,
+  sigma_0 = 10,
+  sigma_1 = 10,
+  round_up = TRUE
+)
+```
+
+The increase in precision from covariate adjustment is never known precisely during the planning of a study. Instead of relying on an assumption about the gain in precision from covariates, investigators can use information monitoring to adapt data collection to the accruing information from both covariates and outcomes.
+
+Planning Information-Monitored Covariate Adjusted Randomized Designs [PICARD](https://josh-betz.shinyapps.io/PICARD/) is an app that allows users to explore how covariate adjustment can impact sample size requirements.
+
+
+
+
+--------------------------------------------------------------------------------
+
+# Monitoring Ongoing Studies
+
+In a fixed sample size design, the timing of the final analysis is based on the last participant's last visit. Group sequential analyses are based when pre-specified fractions of the maximum sample size have their final outcome observed. Timing analyses in such studies only depends on counting the number of final outcomes observed during the study.
+
+In information-monitored designs, the times at which analyses are performed and recruitment is stopped depend on when the information reaches pre-specified thresholds. The amount of information contained in the data depends on the number of observations, the completeness of the data, the analytic methods used, and the interrelationships among the observed data. Depending on the analysis methods used, this could include not only outcomes, but also baseline covariates and post-randomization auxiliary variables.
+
+Information monitoring will be illustrated using a simulated dataset. In this simulated study, outcomes are measured at 30 (`y_1`), 60 (`y_2`), 90 (`y_3`), and 120 (`y_4`) days post randomization. There are four continuous baseline covariates: `x_1`, `x_2`, `x_3`, and `x_4`. `.enrollment_time` indicates the date of randomization for an individual, measured in days after study initiation. The time from study initiation at which the outcomes `y_1` - `y_4` were measured are denoted `.t_1` - `.t_4`.
+
+```{r}
+final_data <-
+  read.csv(
+    file = "Example_Data_1.csv"
+  )
+
+head(final_data)
+```
+
+This dataset contains all the information that would be observed if `r nrow(final_data)` participants were randomized and followed to the end of the study.
+
+
+
+
+## Challenges in Information Monitoring
+
+A new challenge in analyzing data in an ongoing trial is how to appropriately treat missing data. Suppose the following are observed:
+
+  - A participant is newly enrolled, has their baseline covariates measured, is randomized, is still on study, and has not yet entered any follow-up windows
+  - A participant is randomized, but did not attend any follow-up visits
+
+In both of these cases, the covariates, and treatment assignment are observed, but the outcomes are missing. In the first case, outcomes are not yet observed: while they are missing, they could still be observed when the participant enters the study window. In the latter case, they are known to be missing: the study window is closed without the outcome being observed.
+
+A convention can be used to differentiate outcomes that are not yet observed from those known to be missing:
+
+  - Completed assessments have both an observed outcome and an observed assessment time.
+  - Missed assessments have a missing outcome, but an observed assessment time: 
+    - If an assessment occurred, but no valid outcome was obtained, the time of the assessment is used.
+    - If an assessment was missed, the end of the study window is used, indicating the last time an outcome could have been observed per protocol.
+  - Not-yet-observed assessments are missing both an outcome and an assessment time.
+
+
+
+
+## Preparing Interim Datasets
+
+A set of indicator variables `.r_1`, `.r_2`, and so on can be created, indicating whether an outcome is observed (`1`), known to be missing (`0`), or has not yet been observed (`NA`). This allows software to appropriately handle missing information during an ongoing study. The function `prepare_interim_data` retains only the columns of data relevant to the analysis at hand: covariates, study entry/enrollment time, treatment assignment, outcomes, and the times at which outcomes were measured. The function also creates the indicators for differentiating not-yet-obtained from missing outcomes: 
+
+
+```{r Prepare-Data}
+# Obtain time of last event
+last_event <-
+  final_data[, c(".enrollment_time", ".t_1", ".t_2", ".t_3", ".t_4")] |>
+  unlist() |>
+  max(na.rm = TRUE) |>
+  ceiling()
+
+prepared_final_data <-
+  prepare_interim_data(
+    data = final_data,
+    study_time = last_event,
+    id_variable = ".id",
+    covariates_variables = c("x_1", "x_2", "x_3", "x_4"),
+    enrollment_time_variable = ".enrollment_time",
+    treatment_variable = "tx",
+    outcome_variables = c("y_1", "y_2", "y_3", "y_4"),
+    outcome_time_variables = c(".t_1", ".t_2", ".t_3", ".t_4"), 
+    # Observe missingness 1 week after target study visit
+    observe_missing_times = c(30, 60, 90, 120) + 7
+  )
+```
+
+The resulting object contains the prepared dataset, the original dataset, the study time of the data lock, and a list of variables and their role in analyses. 
+
+
+## Reverting to Information Earlier in the Study
+
+These conventions can also be used to take a dataset from one point in time during the study, and revert to the information that was only available at an earlier point in the study. This can be useful for determining how quickly information is accruing during an ongoing study. Let $(X_{1}, \ldots, X_{p})$, $A$, $(Y_{1}, \ldots, Y_{j})$, and $(T_{Y_{1}}, \ldots, T_{Y_{J})}$ respectively denote baseline covariates, treatment assignment, the outcome observed at study visit $j = 1, \ldots, J$, and the times at which the study outcomes are observed. Let $w^{o}_{j}$ and $w^{c}_{j}$ respectively denote the opening and closing of the study window for visit $j$.
+
+To obtain the information available at $t$ days after the randomization of the first participant:
+
+  1. Retain only participants where $T_{A} < t$: i.e. those randomized by study time $t$
+  2. Set outcome $Y_{j}$ to unobserved if $T_{Y_{j}} > t$: i.e. outcomes not observed by time $t$
+  3. For participants who are withdrawn ($D$ is observed), set $Y_{j}$ to missing if $T_{Y_{j}} - T_{A} > w^{o}_{j}$: otherwise, treat the outcome as not yet observed.
+  
+For example, the data known at 90 days can be obtained using the `data_at_time_t()` function as follows:
+
+```{r Obtain-Past-Dataset}
+data_90 <-
+  data_at_time_t(
+    prepared_data = prepared_final_data,
+    study_time = 90
+  )
+```
+
+Consider 90 days after study initiation:
+
+  - Participant 1 is known to have missed their first post-randomization assessment: `.r_1` is `0`
+  - Participants 2-5 have had their first post-randomization outcome obtained: `.r_1` is `1`
+  - Participant 6 missed their first post-randomization assessment, but this is not yet known at day 90: `.r_1` is `NA`
+
+```{r Show-Header-Data-at-70-Days}
+# Data known at study day 90
+show_cols <- 
+  c(".id", "x_2", "x_3", "x_4", "tx")
+data_90$data[1:6, c(show_cols, ".e", ".t_1", ".r_1", "y_1")]
+```
+
+Compare this with the first rows of the final data:
+
+```{r Show-Header-Final-Data}
+# Complete Data
+final_data[1:6, c(show_cols, ".enrollment_time", ".t_1", "y_1")]
+```
+
+
+
+
+--------------------------------------------------------------------------------
+
+## Visualizing Outcome Accrual
+
+Information depends not just on the number of observations, but also the relationships among the covariates, treatment, outcome, and missingness. However, it is still useful to count and plot missingness over time. `count_outcomes()` takes prepared data and counts the number of randomizations and outcomes observed by study time. Outcomes includes separate columns for determined outcomes and observed outcomes:
+
+```{r Get-Outcome-Times}
+outcome_times_final <-
+  count_outcomes(
+    prepared_data = prepared_final_data
+  )
+
+head(outcome_times_final)
+```
+
+This can also be done by study time:
+
+```{r Get-Outcome-Times-Day-90}
+count_outcomes(
+  prepared_data = prepared_final_data,
+  study_time = 90
+)
+```
+
+Accrual of outcomes can be plotted using `plot_outcome_counts()`. Plotting all observed outcomes is the default:
+
+```{r Plot-Outcomes-All-Time}
+plot_outcome_counts(
+  prepared_data = prepared_final_data
+)
+```
+
+Specifying `study_time` plots the number of outcomes at a particular point in the study:
+
+```{r Plot-Outcomes-at-Study-Time}
+plot_outcome_counts(
+  prepared_data = prepared_final_data,
+  study_time = 1000
+)
+```
+
+The number of events for binary or time-to-event outcomes can also be added to the plot.
+
+
+```{r}
+prepared_data = prepared_final_data
+study_time <- 579
+monitored_design <-
+  initialize_monitored_design(
+    trial_design = trial_design,
+    maximum_sample_size = 280,
+    information_target = information_adaptive,
+    orthogonalize = TRUE,
+    rng_seed_analysis = 54321
+  )
+n_bootstrap <- 100
+orthogonalize <- TRUE
+rng_seed = 12345
+control = monitored_design_control()
+
+estimation_function = standardization
+estimation_arguments = 
+  list(
+    estimand = "difference",
+    y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+    y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+    family = gaussian,
+    treatment_column = "tx"
+  )
+
+
+if(is.null(study_time)){
+  study_time <- prepared_data$study_time
+}
+
+if(names(monitored_design))
+
+
+orthogonalize <- monitored_design$original_design$orthogonalize
+information_target <- monitored_design$original_design$information_target
+
+boot_at_time_t <- data <- 
+  data_at_time_t(
+    prepared_data = prepared_data,
+    study_time = study_time
+  )
+
+outcome_counts <-
+  count_outcomes(
+    prepared_data = data, 
+    study_time = study_time
+  )
+
+information <-
+  count_outcomes_at_time_t(
+    prepared_data = data,
+    study_time = study_time
+  )$count_complete
+  
+information[, c("information", "information_fraction")] <- NA
+
+resampled_cols <-
+  with(
+    data = data$variables,
+    expr = {c(covariates_variables, treatment_variable, outcome_variables)}
+  )
+
+outcome_col <- tail(x = resampled_cols, n = 1)
+
+static_cols <-
+  with(
+    data = data$variables,
+    expr = {c(".id", ".e", renamed_outcome_times)}
+  )
+
+outcome_indicators <- data$variables$outcome_indicators
+is_observed <-
+  !is.na(data$data[, outcome_indicators])
+
+n_outcomes <- length(outcome_indicators)
+n_per_outcome <- colSums(is_observed)
+sum_observed <- rowSums(is_observed)
+
+data$data$.n_outcomes <- sum_observed
+
+indices <- list()
+
+for(i in n_outcomes:0){
+  indices[[(n_outcomes + 1 - i)]] <- as.numeric(which(sum_observed >= i))
+}
+
+
+bootstrap_indices <-
+  matrix(
+    data = NA, nrow = nrow(data$data), ncol = n_bootstrap
+  )
+
+indices_i <-
+  lapply(
+    X = 1:length(n_per_outcome),
+    FUN = function(i){
+      sample(x = indices[[i]], size = n_per_outcome[i], replace = TRUE)
+    }
+  ) |> unlist()
+
+
+    
+      
+  
+
+
+for(i in 1:ncol(bootstrap_indices)){
+  bootstrap_indices[, i] <-
+    boot_indices <-
+    sapply(
+      X = indices,
+      FUN = function(x, n = n_per_outcome[i])
+        sample(x = x, size = n, replace = TRUE)
+    ) |> unlist()
+}
+
+bootstrap_estimates <- rep(x = NA, n = n_bootstrap)
+  
+for(i in 1:n_bootstrap){
+  boot_at_time_t$data <-
+    data.frame(
+      data$data[unlist(indices), static_cols],
+      data$data[boot_indices, resampled_cols]
+    )
+  
+  for(j in 1:nrow(information)){
+    information_j <-
+      estimate_information(
+        data = 
+          data_at_time_t(
+            prepared_data = boot_at_time_t,
+            study_time = information$times[j]
+          )$data,
+        monitored_design = monitored_design,
+        estimation_function = estimation_function,
+        estimation_arguments = estimation_arguments,
+        orthogonalize = orthogonalize,
+        rng_seed = rng_seed,
+        return_results = FALSE,
+        control = control
+      )
+
+    info_j <-
+      with(
+        data = information_j,
+        expr = {
+          ifelse(
+            test = orthogonalize,
+            yes = information_orthogonal,
+            no = information
+          )
+        }
+      )
+    
+    information$information[j] <- info_j
+    bootstrap_trajectories[j, i] <-
+      information$information_fraction[j] <- info_j/information_target
+  }
+  
+  regression_coefs <-
+    regression_wrapper(
+      data = information,
+      regression_function = regression_function,
+      formula = 
+        paste0("information_fraction ~ ", outcome_col) |>
+        as.formula(),
+      nboot = 0
+    ) |> coef()
+  
+  
+  bootstrap_estimates[i, c("intercept", "slope")] <-
+    regression_coefs |> as.numeric()
+}
+
+
+
+
+
+```
+
+--------------------------------------------------------------------------------
+
+## Computing Information Trajectories
+
+The primary reason for the `data_at_time_t()` function is to see how information is accruing over study time. This trajectory can be computed using `information_trajectory()`. Below is the trajectory of information for when 50 primary outcomes are observed:
+
+```{r Compute-Information-Trajectories-1}
+outcome_counts_at_time_t(
+  prepared_data = prepared_final_data, 
+  study_time = 579
+)
+
+data_info_check <-
+  data_at_time_t(
+    prepared_data = prepared_final_data,
+    study_time = 579
+  )
+
+info_trajectory_1 <-
+  information_trajectory(
+    prepared_data = data_info_check,
+    monitored_design = NULL,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        family = gaussian,
+        treatment_column = "tx"
+      ),
+    orthogonalize = TRUE,
+    n_min = 30,
+    n_increment = 2,
+    rng_seed = 12345
+  )
+
+info_trajectory_1$information_fraction <-
+  info_trajectory_1$information/information_adaptive
+
+info_trajectory_1$primary_n_to_next_target <-
+  information_adaptive*information_rates[1]*
+  with(info_trajectory_1, y_4/information)
+
+info_trajectory_1
+```
+
+
+Note the percentage change in information: there are large percentage changes before the sample size exceeds 40 observed final outcomes. The estimated number of primary outcomes necessary to achieve sufficient information for the first interim analysis still fluctuates considerably: between 65 and 92. This trajectory can be locally smoothed to project when interim analyses may occur:
+
+
+```{r Plot-Information-Trajectory-1}
+plot(
+  information_fraction ~ y_4,
+  data = info_trajectory_1,
+  ylim = c(0, information_rates[1]),
+  xlim = c(min(info_trajectory_1$y_4),
+           ceiling(tail(x = info_trajectory_1$primary_n_to_next_target, n = 1))),
+  main = "Information vs. Primary Outcomes Obtained"
+)
+
+abline(
+  h = information_rates,
+  lty = 2
+)
+
+# Use Theil-Sen estimator from `deming` package
+projected_n_theil_sen <-
+  inverse_regression_bca(
+    data = info_trajectory_1,
+    formula = information_fraction ~ y_4,
+    regression_function = deming::theilsen,
+    y_target = 0.5,
+    n_bootstrap = 10000,
+    confidence = c(0.95, 0.5),
+    nboot = 0
+  )
+
+# Use OLS regression:
+projected_n_lm <-
+  inverse_regression_bca(
+    data = info_trajectory_1,
+    formula = information_fraction ~ y_4,
+    regression_function = lm,
+    y_target = 0.5,
+    n_bootstrap = 10000,
+    confidence = c(0.95, 0.5)
+  )
+
+
+
+
+subset(
+  x = projected_n_theil_sen$ci,
+  parameter == "target"
+)
+
+subset(
+  x = projected_n_lm$ci,
+  parameter == "target"
+)
+
+abline(coef = coef(projected_n_lm$fitted_regression), col = "red")
+abline(coef = coef(projected_n_theil_sen$fitted_regression), col = "blue")
+abline(v = projected_n_lm$boot_object$t0[1], col = "red")
+abline(v = projected_n_theil_sen$boot_object$t0[1], col = "blue")
+legend(
+  x = "bottomright",
+  legend = c("OLS", "Theil-Sen"),
+  col = c("red", "blue"),
+  lty = 1
+)
+
+predicted_range <- 
+  c(projected_n_lm$boot_object$t0[1],
+         projected_n_theil_sen$boot_object$t0[1]) |>
+     sort() |>
+     ceiling()
+
+predicted_range
+```
+
+Smoothed trajectories suggest that the interim analysis information target may be met as soon as `r predicted_range[1]` to `r predicted_range[2]` primary outcomes are observed, but with considerable uncertainty. The plots below show estimates of the final analysis can change as data accrues:
+
+```{r Compute-Information-Trajectories-2, echo = FALSE}
+outcome_counts_at_time_t(
+  prepared_data = prepared_final_data, 
+  study_time = 993
+)
+
+data_info_check <-
+  data_at_time_t(
+    prepared_data = prepared_final_data,
+    study_time = 993
+  )
+
+info_trajectory <-
+  information_trajectory(
+    prepared_data = data_info_check,
+    monitored_design = NULL,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        family = gaussian,
+        treatment_column = "tx"
+      ),
+    orthogonalize = TRUE,
+    n_min = 30,
+    n_increment = 2,
+    rng_seed = 12345
+  )
+
+info_trajectory$information_fraction <-
+  info_trajectory$information/information_adaptive
+
+info_trajectory$primary_n_to_next_target <-
+  information_adaptive*information_rates[1]*
+  with(info_trajectory, y_4/information)
+```
+
+```{r Plot-Information-Trajectory-2, echo = FALSE, fig.height = fig_2w, fig.width = fig_2h}
+par(mfrow = c(2, 2))
+
+min_n <- c(40, 52, 52, 52)
+max_n <- c(60, 80, 90, 98)
+
+for(i in 1:length(min_n)){
+  plot(
+    information_fraction ~ y_4,
+    data = 
+      subset(
+        x = info_trajectory,
+        subset = y_4 <= max_n[i]
+      ),
+    ylim = c(0, information_rates[2]),
+    xlim = c(min(info_trajectory$y_4), 120),
+    main = paste0("Information vs. Primary Outcomes Obtained: N = ", max_n[i])
+  )
+  
+  abline(
+    h = information_rates,
+    lty = 2
+  )
+  
+  # Use Theil-Sen estimator from `deming` package
+  projected_n_theil_sen <-
+    inverse_regression_bca(
+      data = 
+        subset(
+          x = info_trajectory,
+          subset = y_4 >= min_n[i] & y_4 <= max_n[i]
+        ),
+      formula = information_fraction ~ y_4,
+      regression_function = deming::theilsen,
+      y_target = 0.5,
+      n_bootstrap = 10000,
+      confidence = c(0.95, 0.5),
+      nboot = 0
+    )
+  
+  # Use OLS regression:
+  projected_n_lm <-
+    inverse_regression_bca(
+      data = 
+        subset(
+          x = info_trajectory,
+          subset = y_4 >= min_n[i] & y_4 <= max_n[i]
+        ),
+      formula = information_fraction ~ y_4,
+      regression_function = lm,
+      y_target = 0.5,
+      n_bootstrap = 10000,
+      confidence = c(0.95, 0.5)
+    )
+  
+  abline(coef = coef(projected_n_lm$fitted_regression), col = "red")
+  abline(coef = coef(projected_n_theil_sen$fitted_regression), col = "blue")
+  abline(v = projected_n_lm$boot_object$t0[1], col = "red")
+  abline(v = projected_n_theil_sen$boot_object$t0[1], col = "blue")
+  legend(
+    x = "bottomright",
+    legend = c("OLS", "Theil-Sen"),
+    col = c("red", "blue"),
+    lty = 1
+  )
+}
+```
+
+
+Information can be checked using `estimate_information()`:
+
+
+```{r Check-Information}
+outcome_counts_at_time_t(
+  prepared_data = prepared_final_data, 
+  study_time = 993
+)
+
+data_info_check_2 <-
+  data_at_time_t(
+    prepared_data = prepared_final_data,
+    study_time = 993
+  )$data
+
+information_check <-
+  estimate_information(
+    data = data_info_check_2,
+    monitored_design = NULL,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        family = gaussian,
+        treatment_column = "tx"
+      ),
+    orthogonalize = TRUE,
+    rng_seed = 23456
+  )
+
+# Get information level
+information_check$information_orthogonal
+
+# Get information fraction
+information_check$information_orthogonal/information_adaptive
+```
+
+The smoothed information trajectories suggest that the information level is truly above the threshold for analysis, and this is not just a random fluctuation.
+
+
+
+
+--------------------------------------------------------------------------------
+
+
+
+
+# Conducting Analyses
+
+Conducting the analysis first requires that the study design is fully specified, including the group sequential design, the RNG seed for analyses, a maximum sample size, a target information level, and whether orthogonalized test statistics should be computed and used:
+
+```{r Initialize-Analysis}
+monitored_design <-
+  initialize_monitored_design(
+    trial_design = trial_design,
+    maximum_sample_size = 280,
+    information_target = information_adaptive,
+    orthogonalize = TRUE,
+    rng_seed_analysis = 54321
+  )
+```
+
+
+
+```{r Interim-Analysis-1}
+outcome_counts_at_time_t(
+  prepared_data = prepared_final_data, 
+  study_time = 993
+)
+
+data_interim_1 <-
+  data_at_time_t(
+    prepared_data = prepared_final_data,
+    study_time = 993
+  )$data
+
+interim_analysis_1 <-
+  monitored_analysis(
+    data = data_interim_1,
+    monitored_design = monitored_design,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        family = gaussian,
+        treatment_column = "tx"
+      )
+    )
+```
+
+```{r Interim-Analysis-Estimates, results = "markup"}
+summary.monitored_design(
+  object = interim_analysis_1
+)
+
+interim_analysis_1$interim_analysis_1$decision_data
+```
+
+Neither efficacy or futility criteria have been reached. The information accruing should be monitored for the next analysis. The final sample size required can be estimated using data from participants who have completed study participation:
+
+```{r Estimate-Final-Sample-Size}
+estimate_final_sample_size(
+    data = data_interim_1,
+    monitored_design = monitored_design,
+    estimation_function = standardization,
+    estimation_arguments =
+      list(
+        estimand = "difference",
+        y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        family = gaussian,
+        treatment_column = "tx"
+      ),
+    control = monitored_design_control()
+  )
+```
+
+Based on the accrued information at this point in the study, the maximum sample size will not be exceeded.
+
+
+
+
+## Multiple Analyses
+
+When there are interim and final analyses, the result from `monitored_analysis` can be passed as an argument to the next analysis, containing all of the details about the study design and previous analyses:
+
+```{r}
+
+
+```
+
+
+
+```{r Interim-Analysis-2, eval = FALSE}
+interim_analysis_2 <-
+  monitored_analysis(
+    data = data_interim_2,
+    monitored_design = interim_analysis_1,
+    estimation_function = standardization,
+    estimation_arguments = 
+      list(
+        estimand = "difference",
+        y0_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        y1_formula = y_4 ~ x_1 + x_2 + x_3 + x_4,
+        family = gaussian,
+        treatment_column = "tx"
+      )
+  )
+```
+
+
+
